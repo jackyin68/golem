@@ -3,7 +3,7 @@ import uuid
 from apps.core.benchmark.benchmarkrunner import CoreBenchmark
 from apps.core.task.coretaskstate import TaskDefinition
 
-class FireworksTaskBenchmark(CoreBenchmark):
+class MonitorTaskBenchmark(CoreBenchmark):
     def __init__(self):
         self._normalization_constant = 1000 
         self._task_definition = TaskDefinition()
