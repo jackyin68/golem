@@ -1,13 +1,15 @@
 import copy
+from datetime import datetime
 import decimal
+import json
+import mock
 import os
 import logging
 import yaml
+import requests
 import queue
 
 from ethereum.utils import denoms
-from monitor import LaunchPad, ScriptTask, Workflow
-from monitor.utilities.filepad import FilePad
 from typing import List, Optional
 
 import golem_messages
@@ -139,30 +141,57 @@ class MonitorTaskTypeInfo(TaskTypeInfo):
 
 class MonitorTaskBuilder(BasicTaskBuilder):
     def build(self) -> 'Task':
+
+        run_time = string_to_timeout(self.task_definition['run_time'])
+
+        assert run_time < self.task_definition.timeout
+
+        def _get_timestamp():
+            return int(datetime.now().timestamp())
+
+        end_time = _get_timestamp() + self.task_definition.timeout
+
         return MonitorTask(self.owner,
                              self.task_definition,
-                             self.dir_manager)
+                             self.dir_manager,
+                             self.task_definition.api_secret,
+                             self.task_definition.base_url,
+                             lambda: _get_timestamp() > end_time)
 
 
 class MonitorBenchmarkTaskBuilder(MonitorTaskBuilder):
+    '''
+    This is mock benchmark.
+    '''
+
     def build(self) -> 'Task':
-        return MonitorTask(self.owner,
-                             self.task_definition,
-                             self.dir_manager)
+        mock_obj = mock.MagicMock()
+        return mock_obj
 
 
 class MonitorTask(DockerTask):
+
+    class BasicAcceptStrategy(object):
+        def accept(self, client):
+            return True
+
     ENVIRONMENT_CLASS = MonitorTaskEnvironment
 
     def __init__(self,
                  owner: Node,
                  task_definition: TaskDefinition,
-                 dir_manager: DirManager):
+                 dir_manager: DirManager,
+                 api_secret: str,
+                 base_url: str, 
+                 has_expired_cb):
         super().__init__(owner, task_definition, dir_manager)
+        self.api_secret = api_secret
+        self.base_url = base_url
+        self.has_expired_cb = has_expired_cb
         # work_queue is filled on initialization and on each computation_finished
         # it allows query_extra_data to generate tasks according to
         # Monitor workflow
-        self.work_queue = list()
+        self.accept_strategy = self.BasicAcceptStrategy()
 
         # State tracking structure helps to determine when
         # the task has been finished
@@ -190,15 +219,25 @@ class MonitorTask(DockerTask):
         :param node_name: name of a node that wants to get a next subtask
         """
         subtask_id = self.create_subtask_id()
+
+        create_resource_response = requests.post(self.base_url,
+                                                 headers={'Authentication': 'Bearer {}'
+                                                          .format(self.api_secret)})
+
         subtask_data = {
+                'url': self.base_url + create_resource_response.headers['Location'],
+                'access_token': json.load(create_resource_response.body)['access_token']
         }
-        self.dispatched_subtasks[subtask_id] = {}
 
         subtask_builder = ExtraDataBuilder(self.header, subtask_id, subtask_data,
                                            self.src_code,
                                            self.short_extra_data_repr(subtask_data),
                                            perf_index, self.docker_images)
-        return subtask_builder.get_result()
+
+        subtask = subtask_builder.get_result()
+        self.dispatched_subtasks[subtask_id] = subtask
+
+        return subtask
 
     def query_extra_data_for_test_task(self) -> golem_messages.message.ComputeTaskDef:  # noqa pylint:disable=line-too-long
         pass
@@ -214,13 +253,13 @@ class MonitorTask(DockerTask):
         """ Return information if there are still some subtasks that may be dispended
         :return bool: True if there are still subtask that should be computed, False otherwise
         """
-        return self.work_queue
+        return True
 
     def finished_computation(self) -> bool:
         """ Return information if tasks has been fully computed
         :return bool: True if there is all tasks has been computed and verified
         """
-        return not self.work_queue and not self.dispatched_subtasks
+        return self.has_expired_cb()
 
     def computation_finished(self, subtask_id, task_result,
                              result_type=ResultType.DATA,
@@ -260,20 +299,20 @@ class MonitorTask(DockerTask):
         :return int: number should be greater than 0
         """
         # It won't
-        return len(self.workflow.links.nodes)
+        return 1
 
     def get_active_tasks(self) -> int:
         """ Return number of tasks that are currently being computed
         :return int: number should be between 0 and a result of get_total_tasks
         """
-        return len(self.dispatched_subtasks)
+        return 1
 
     def get_tasks_left(self) -> int:
         """ Return number of tasks that still should be computed
         :return int: number should be between 0 and a result of get_total_tasks
         """
         # TODO analogical to get_total_tasks
-        return self.get_total_tasks() - self.get_active_tasks()
+        return 1
 
     def restart(self):
         """ Restart all subtask computation for this task """
@@ -294,7 +333,7 @@ class MonitorTask(DockerTask):
         """ Return task computations progress
         :return float: Return number between 0.0 and 1.0.
         """
-        return 1.0 - (self.get_tasks_left() / self.get_total_tasks())
+        return 1.0 if self.finished_computation() else 0.0
 
     def get_resources(self) -> list:
         """ Return list of files that are need to compute this task."""
@@ -381,7 +420,6 @@ class MonitorTask(DockerTask):
         """ Return list of states of final task results
         :return list:
         """
-        import pdb; pdb.set_trace()
         return []
 
     def to_dictionary(self):
