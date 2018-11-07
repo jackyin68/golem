@@ -145,9 +145,6 @@ class MonitorTaskBuilder(BasicTaskBuilder):
 
 
 class MonitorBenchmarkTaskBuilder(MonitorTaskBuilder):
-
-    BENCHMARK_FILE = 'fw_adder.yaml'
-
     def build(self) -> 'Task':
         return MonitorTask(self.owner,
                              self.task_definition,
