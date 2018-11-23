@@ -1,27 +1,19 @@
-import copy
-from datetime import datetime
 import decimal
-import json
-import mock
-import os
 import logging
-import yaml
-import requests
-import queue
+from typing import List, Optional
+import mock
 
 from ethereum.utils import denoms
-from typing import List, Optional
 
 import golem_messages
 from golem_messages import idgenerator
-from golem_verificator.verifier import SubtaskVerificationState
 
 from apps.core.task.coretaskstate import TaskDefinition, Options
-from apps.monitor.monitorenvironment import MonitorTaskEnvironment
+from apps.glambda.glambdaenvironment import GLambdaTaskEnvironment
 from golem.network.p2p.node import Node
 from golem.resource.dirmanager import DirManager
 from golem.core.common import timeout_to_deadline, string_to_timeout,\
-                              to_unicode, get_golem_path
+                              to_unicode
 from golem.docker.environment import DockerEnvironment
 from golem.task.taskbase import Task, ResultType, TaskState, TaskBuilder, \
                                 TaskTypeInfo, TaskDefaults, TaskHeader, \
@@ -29,6 +21,7 @@ from golem.task.taskbase import Task, ResultType, TaskState, TaskBuilder, \
 from golem.task.taskclient import TaskClient
 
 logger = logging.getLogger(__name__)
+
 
 def apply(obj, *initial_data, **kwargs):
     for dictionary in initial_data:
@@ -61,6 +54,7 @@ class BasicTaskBuilder(TaskBuilder):
         """
         td = task_type.definition()
         apply(td, dictionary)
+        td.task_type = task_type.name
         td.timeout = string_to_timeout(dictionary['timeout'])
         td.subtask_timeout = string_to_timeout(dictionary['subtask_timeout'])
         td.max_price = \
@@ -128,70 +122,53 @@ class DockerTask(Task):
         super().__init__(th, src_code, task_definition)
 
 
-class MonitorTaskTypeInfo(TaskTypeInfo):
+class GLambdaTaskTypeInfo(TaskTypeInfo):
     def __init__(self):
         super().__init__(
-            "Monitor",
+            "GLambda",
             TaskDefinition,
             TaskDefaults(),
             Options,
-            MonitorTaskBuilder
+            GLambdaTaskBuilder
         )
 
 
-class MonitorTaskBuilder(BasicTaskBuilder):
+class GLambdaTaskBuilder(BasicTaskBuilder):
     def build(self) -> 'Task':
-
-        run_time = string_to_timeout(self.task_definition['run_time'])
-
-        assert run_time < self.task_definition.timeout
-
-        def _get_timestamp():
-            return int(datetime.now().timestamp())
-
-        end_time = _get_timestamp() + self.task_definition.timeout
-
-        return MonitorTask(self.owner,
+        return GLambdaTask(self.owner,
                              self.task_definition,
                              self.dir_manager,
-                             self.task_definition.api_secret,
-                             self.task_definition.base_url,
-                             lambda: _get_timestamp() > end_time)
+                             self.task_definition.extra_data['method'],
+                             self.task_definition.extra_data['args']
+                        )
 
 
-class MonitorBenchmarkTaskBuilder(MonitorTaskBuilder):
-    '''
-    This is mock benchmark.
-    '''
-
+class GLambdaBenchmarkTaskBuilder(GLambdaTaskBuilder):
     def build(self) -> 'Task':
         mock_obj = mock.MagicMock()
         return mock_obj
 
 
-class MonitorTask(DockerTask):
+class GLambdaTask(DockerTask):
 
     class BasicAcceptStrategy(object):
         def accept(self, client):
             return True
 
-    ENVIRONMENT_CLASS = MonitorTaskEnvironment
+    ENVIRONMENT_CLASS = GLambdaTaskEnvironment
 
     def __init__(self,
                  owner: Node,
                  task_definition: TaskDefinition,
                  dir_manager: DirManager,
-                 api_secret: str,
-                 base_url: str, 
-                 has_expired_cb):
+                 method,
+                 args):
         super().__init__(owner, task_definition, dir_manager)
-        self.api_secret = api_secret
-        self.base_url = base_url
-        self.has_expired_cb = has_expired_cb
-        # work_queue is filled on initialization and on each computation_finished
-        # it allows query_extra_data to generate tasks according to
-        # Monitor workflow
-        self.accept_strategy = self.BasicAcceptStrategy()
+
+        self.method = method
+        self.args = args
+        self.finished = False
+        self.results = None
 
         # State tracking structure helps to determine when
         # the task has been finished
@@ -220,13 +197,9 @@ class MonitorTask(DockerTask):
         """
         subtask_id = self.create_subtask_id()
 
-        create_resource_response = requests.post(self.base_url,
-                                                 headers={'Authentication': 'Bearer {}'
-                                                          .format(self.api_secret)})
-
         subtask_data = {
-                'url': self.base_url + create_resource_response.headers['Location'],
-                'access_token': json.load(create_resource_response.body)['access_token']
+                'method': self.method,
+                'args': self.args
         }
 
         subtask_builder = ExtraDataBuilder(self.header, subtask_id, subtask_data,
@@ -247,19 +220,19 @@ class MonitorTask(DockerTask):
         :param extra_data
         :return str:
         """
-        return 'monitor task'
+        return 'glambda task'
 
     def needs_computation(self) -> bool:
         """ Return information if there are still some subtasks that may be dispended
         :return bool: True if there are still subtask that should be computed, False otherwise
         """
-        return True
+        return not self.dispatched_subtasks
 
     def finished_computation(self) -> bool:
         """ Return information if tasks has been fully computed
         :return bool: True if there is all tasks has been computed and verified
         """
-        return self.has_expired_cb()
+        return self.finished and not self.dispatched_subtasks
 
     def computation_finished(self, subtask_id, task_result,
                              result_type=ResultType.DATA,
@@ -269,6 +242,19 @@ class MonitorTask(DockerTask):
         :param task_result: task result, can be binary data or list of files
         :param result_type: ResultType representation
         """
+        # Hardcode for now because we know result.txt is always before other files
+        RESULT_TXT = 0
+        with open(task_result[RESULT_TXT], 'r') as f:
+            self.results = f.read()
+
+        del self.dispatched_subtasks[subtask_id]
+
+        if True:
+            # Do something with the result here data here
+            self.progress = 1.0
+            self.finished = True
+
+        # Verification is always positive in this case
         try:
             if verification_finished:
                 verification_finished()
@@ -279,7 +265,9 @@ class MonitorTask(DockerTask):
         """ Inform that computation of a task with given id has failed
         :param subtask_id:
         """
-        raise RuntimeError("Computation failed")
+        self.finished = True
+        self.progress = 1.0
+        del self.dispatched_subtasks[subtask_id]
 
     def verify_subtask(self, subtask_id):
         """ Verify given subtask
@@ -305,14 +293,14 @@ class MonitorTask(DockerTask):
         """ Return number of tasks that are currently being computed
         :return int: number should be between 0 and a result of get_total_tasks
         """
-        return 1
+        return 0 if self.finished else 1 
 
     def get_tasks_left(self) -> int:
         """ Return number of tasks that still should be computed
         :return int: number should be between 0 and a result of get_total_tasks
         """
         # TODO analogical to get_total_tasks
-        return 1
+        return 0 if self.finished else 1
 
     def restart(self):
         """ Restart all subtask computation for this task """
@@ -326,8 +314,7 @@ class MonitorTask(DockerTask):
 
     def abort(self):
         """ Abort task and all computations """
-        # Possibly delete the workflow and see what happens on provider side
-        raise NotImplementedError()
+        pass        
 
     def get_progress(self) -> float:
         """ Return task computations progress
@@ -400,7 +387,7 @@ class MonitorTask(DockerTask):
         :param subtask_id:
         :return list:
         """
-        return []
+        return self.results
 
     def result_incoming(self, subtask_id):
         """ Informs that a computed task result is being retrieved
