@@ -1,8 +1,10 @@
 import decimal
+import json
 import logging
+import os
 from typing import List, Optional
-import mock
 
+import mock
 from ethereum.utils import denoms
 
 import golem_messages
@@ -95,7 +97,6 @@ class DockerTask(Task):
                  owner: Node,
                  task_definition: TaskDefinition,
                  dir_manager: DirManager) -> None:
-
         self.environment = self.ENVIRONMENT_CLASS()
 
         if task_definition.docker_images:
@@ -168,6 +169,10 @@ class GLambdaTask(DockerTask):
         self.method = method
         self.args = args
         self.finished = False
+        self.output_path = os.path.join(
+            dir_manager.get_task_output_dir(task_definition.task_id),
+            'result.txt'
+        )
         self.results = None
 
         # State tracking structure helps to determine when
@@ -242,15 +247,30 @@ class GLambdaTask(DockerTask):
         :param task_result: task result, can be binary data or list of files
         :param result_type: ResultType representation
         """
+
         # Hardcode for now because we know result.txt is always before other files
-        RESULT_TXT = 0
-        with open(task_result[RESULT_TXT], 'r') as f:
-            self.results = f.read()
+        RESULT_TXT_ID = 0
+        result_file = task_result[0]
+
+        # FIXME 
+        # We could use copying to speed things up here 
+        # Now we read one file and write it into another 
+        with open(result_file, 'r') as f:
+            with open(self.output_path, 'w') as out:
+                # Result is of following structure:
+                # {
+                #   'data': 'lambda_result_string'
+                #   'error': 'optional error string'
+                # }
+                j_result = json.loads(f.read())
+                out.write(
+                    str(j_result['data'])
+                )
 
         del self.dispatched_subtasks[subtask_id]
 
         if True:
-            # Do something with the result here data here
+            # Do some verification with the result data here
             self.progress = 1.0
             self.finished = True
 
@@ -400,8 +420,7 @@ class GLambdaTask(DockerTask):
         """ Return list of files containing final import task results
         :return list:
         """
-        # Called only on enqueue by taskmanager to fill tasks_states
-        return []
+        return [self.output_path]
 
     def get_output_states(self) -> List:
         """ Return list of states of final task results
