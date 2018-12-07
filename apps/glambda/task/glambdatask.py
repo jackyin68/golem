@@ -247,39 +247,45 @@ class GLambdaTask(DockerTask):
         :param task_result: task result, can be binary data or list of files
         :param result_type: ResultType representation
         """
+        try:
+            # Hardcode for now because we know result.txt is always before other files
+            RESULT_TXT_ID = 0
+            result_file = task_result[RESULT_TXT_ID]
 
-        # Hardcode for now because we know result.txt is always before other files
-        RESULT_TXT_ID = 0
-        result_file = task_result[0]
+            # FIXME 
+            # We could use copying to speed things up here 
+            # Now we read one file and write it into another 
+            with open(result_file, 'r') as f:
+                with open(self.output_path, 'w') as out:
+                    # Result is of following structure:
+                    # {
+                    #   'data': 'lambda_result_string'
+                    #   'error': 'optional error string'
+                    # }
+                    j_result = json.loads(f.read().encode())
+                    if 'error' in j_result:
+                        out.write(
+                            str(j_result['error'])
+                        )
+                    else:
+                        out.write(
+                            str(j_result['data'])
+                        )
 
-        # FIXME 
-        # We could use copying to speed things up here 
-        # Now we read one file and write it into another 
-        with open(result_file, 'r') as f:
-            with open(self.output_path, 'w') as out:
-                # Result is of following structure:
-                # {
-                #   'data': 'lambda_result_string'
-                #   'error': 'optional error string'
-                # }
-                j_result = json.loads(f.read())
-                out.write(
-                    str(j_result['data'])
-                )
+            del self.dispatched_subtasks[subtask_id]
 
-        del self.dispatched_subtasks[subtask_id]
-
-        if True:
-            # Do some verification with the result data here
-            self.progress = 1.0
-            self.finished = True
-
+            if True:
+                # Do some verification with the result data here
+                self.progress = 1.0
+                self.finished = True
+        except BaseException as e:
+            logger.exception('')
         # Verification is always positive in this case
         try:
             if verification_finished:
                 verification_finished()
         except Exception as e:
-            logger.exception("")
+            logger.exception('')
 
     def computation_failed(self, subtask_id):
         """ Inform that computation of a task with given id has failed
