@@ -426,9 +426,7 @@ class GLambdaTask(DockerTask):
         """ Return list of files containing final import task results
         :return list:
         """
-        with open(self.output_path, 'r') as f:
-            content = f.read()
-        return [content]
+        return [self.output_path]
 
     def get_output_states(self) -> List:
         """ Return list of states of final task results

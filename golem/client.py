@@ -3,6 +3,7 @@
 import collections
 import enum
 import logging
+import os
 import sys
 import time
 import uuid
@@ -1039,6 +1040,20 @@ class Client(HardwarePresetsMixin):
         state = self.task_server.task_manager.query_task_state(task_id)
         if state:
             return DictSerializer.dump(state)
+
+    @rpc_utils.expose('comp.task.result')
+    def get_task_results(self, task_id):
+        state = self.task_server.task_manager.query_task_state(task_id)
+        out = []
+        for outfile in state.outputs:
+            with open(outfile, 'r') as f:
+                _, ext = os.path.splitext(outfile)
+                out.append({
+                    'filename': os.path.basename(outfile),
+                    'data': f.read()
+                })
+        if out:
+            return DictSerializer.dump(out)
 
     def pull_resources(self, task_id, resources, client_options=None):
         self.resource_server.download_resources(
