@@ -576,6 +576,9 @@ class BlenderRenderTask(FrameRenderingTask):
 
         return self._new_compute_task_def(hash, extra_data, 0)
 
+    def get_output_names(self):
+        return ["{}".format(self.output_file, self.output_format)]
+
     def _get_min_max_y(self, start_task):
         if self.use_frames:
             parts = int(self.total_tasks / len(self.frames))

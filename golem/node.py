@@ -1,5 +1,7 @@
 from enum import IntEnum
 import functools
+import traceback
+from fs.tempfs import TempFS
 import logging
 import time
 from typing import (
@@ -135,6 +137,8 @@ class Node(object):
             task_finished_cb=self._try_shutdown
         )
 
+        self.tempfs = TempFS()
+
         if password is not None:
             if not self.set_password(password):
                 raise Exception("Password incorrect")
@@ -205,6 +209,48 @@ class Node(object):
     @rpc_utils.expose('golem.password.unlocked')
     def is_account_unlocked(self) -> bool:
         return self._keys_auth is not None
+
+    @rpc_utils.expose('fs.listdir')
+    def fs_listdir(self, path) -> [str]:
+        try:
+            return self.tempfs.listdir(path)
+        except Exception as e:
+            traceback.print_stack()
+            return None
+
+    @rpc_utils.expose('fs.mkdir')
+    def fs_mkdir(self, path) -> [str]:
+        try:
+            self.tempfs.makedir(path)
+        except Exception as e:
+            traceback.print_stack()
+            return None
+
+    @rpc_utils.expose('fs.write')
+    def fs_write(self, path, data):
+        with self.tempfs.openbin(path, 'wb') as f:
+            return f.write(data)
+
+    @rpc_utils.expose('fs.getsyspath')
+    def fs_getsyspath(self, path):
+        return self.tempfs.getsyspath(path)
+
+    @rpc_utils.expose('fs.read')
+    def fs_read(self, path):
+        try:
+            with self.tempfs.openbin(path, 'rb') as f:
+                return f.read()
+        except Exception as e:
+            traceback.print_stack()
+            return None
+
+    @rpc_utils.expose('fs.remove')
+    def fs_remove(self, path):
+        return self.tempfs.remove(path)
+
+    @rpc_utils.expose('fs.purge')
+    def fs_purge(self):
+        self.tempfs = TempFS()
 
     @rpc_utils.expose('golem.mainnet')
     @classmethod
