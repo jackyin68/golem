@@ -11,8 +11,6 @@ from copy import copy, deepcopy
 from os import path, makedirs
 from pathlib import Path
 from typing import Any, Dict, Hashable, Optional, Union, List, Iterable, Tuple
-from fs.tempfs import TempFS
-
 from ethereum.utils import denoms
 from golem_messages import datastructures as msg_datastructures
 from pydispatch import dispatcher
@@ -215,7 +213,6 @@ class Client(HardwarePresetsMixin):
         )
 
         logger.debug('Client init completed')
-        self.tempfs = TempFS()
 
     @property
     def task_manager(self):
@@ -1042,20 +1039,6 @@ class Client(HardwarePresetsMixin):
         state = self.task_server.task_manager.query_task_state(task_id)
         if state:
             return DictSerializer.dump(state)
-
-    @rpc_utils.expose('comp.task.result')
-    def get_task_results(self, task_id):
-        state = self.task_server.task_manager.query_task_state(task_id)
-        out = []
-        for outfile in state.outputs:
-            with open(outfile, 'rb') as f:
-                _, ext = os.path.splitext(outfile)
-                out.append({
-                    'filename': os.path.basename(outfile),
-                    'data': f.read()
-                })
-        if out:
-            return DictSerializer.dump(out)
 
     def pull_resources(self, task_id, resources, client_options=None):
         self.resource_server.download_resources(

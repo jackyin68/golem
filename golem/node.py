@@ -1,9 +1,12 @@
 from enum import IntEnum
 import functools
-import traceback
-from fs.tempfs import TempFS
 import logging
+import os
+import fs
 import time
+import traceback
+from fs.osfs import OSFS
+from fs.tempfs import TempFS
 from typing import (
     Any,
     Callable,
@@ -41,6 +44,7 @@ from golem.rpc.session import (
     Session,
 )
 from golem.terms import TermsOfUse
+from golem.tools.uploadcontroller import UploadController
 
 F = TypeVar('F', bound=Callable[..., Any])
 logger = logging.getLogger(__name__)
@@ -62,7 +66,6 @@ class ShutdownResponse(IntEnum):
     quit = 0
     off = 1
     on = 2
-
 
 # pylint: disable=too-many-instance-attributes
 class Node(object):
@@ -138,6 +141,7 @@ class Node(object):
         )
 
         self.tempfs = TempFS()
+        self.upload_ctrl = UploadController(self.tempfs)
 
         if password is not None:
             if not self.set_password(password):
@@ -226,6 +230,26 @@ class Node(object):
             traceback.print_stack()
             return None
 
+    @rpc_utils.expose('fs.meta')
+    def fs_meta(self):
+        return self.upload_ctrl.meta
+
+    @rpc_utils.expose('fs.upload_id')
+    def fs_upload_id(self, path) -> [str]:
+        return self.upload_ctrl.open(path, 'wb')
+
+    @rpc_utils.expose('fs.upload')
+    def fs_upload(self, _id, data) -> [str]:
+        return self.upload_ctrl.upload(_id, data)
+
+    @rpc_utils.expose('fs.download_id')
+    def fs_download_id(self, path) -> [str]:
+        return self.upload_ctrl.open(path, 'rb')
+
+    @rpc_utils.expose('fs.download')
+    def fs_download(self, _id) -> [str]:
+        return self.upload_ctrl.download(_id)
+
     @rpc_utils.expose('fs.write')
     def fs_write(self, path, data):
         with self.tempfs.openbin(path, 'wb') as f:
@@ -243,6 +267,32 @@ class Node(object):
         except Exception as e:
             traceback.print_stack()
             return None
+
+    def get_temp_results_path_for_task(self, task_id):
+        return 'results-{task_id}'.format(task_id=task_id)
+
+    @rpc_utils.expose('comp.task.results_purge')
+    def purge_task_results(self, task_id):
+        path = self.get_temp_results_path_for_task(task_id)
+        self.tempfs.removetree(path)
+
+    @rpc_utils.expose('comp.task.result')
+    def get_task_results(self, task_id):
+        # FIXME Obtain task state in less hacky way
+        state = self.client.task_server.task_manager.query_task_state(task_id)
+
+        res_path = self.get_temp_results_path_for_task(task_id)
+
+        # Create a directory there results will be held temporarily
+        self.tempfs.makedir(res_path)
+        osfs = OSFS('/')
+        out = []
+        for outfile in state.outputs:
+            res_path = os.path.join(res_path, os.path.basename(outfile))
+            fs.copy.copy_file(osfs, outfile, self.tempfs, res_path)
+            out.append(res_path)
+        if out:
+            return out
 
     @rpc_utils.expose('fs.remove')
     def fs_remove(self, path):
