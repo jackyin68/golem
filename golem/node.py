@@ -250,6 +250,18 @@ class Node(object):
     def fs_download(self, _id) -> [str]:
         return self.upload_ctrl.download(_id)
 
+    @rpc_utils.expose('fs.isdir')
+    def fs_isdir(self, path):
+        return self.tempfs.getinfo(path).is_dir
+
+    @rpc_utils.expose('fs.isfile')
+    def fs_isfile(self, path):
+        return self.tempfs.getinfo(path).is_file
+
+    @rpc_utils.expose('fs.islink')
+    def fs_islink(self, path):
+        return self.tempfs.getinfo(path).is_link
+
     @rpc_utils.expose('fs.write')
     def fs_write(self, path, data):
         with self.tempfs.openbin(path, 'wb') as f:
