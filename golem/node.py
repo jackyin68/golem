@@ -298,13 +298,11 @@ class Node(object):
         # Create a directory there results will be held temporarily
         self.tempfs.makedir(res_path)
         osfs = OSFS('/')
-        out = []
-        for outfile in state.outputs:
-            res_path = os.path.join(res_path, os.path.basename(outfile))
-            fs.copy.copy_file(osfs, outfile, self.tempfs, res_path)
-            out.append(res_path)
-        if out:
-            return out
+
+        task_results_dir = state.outputs[0]
+        res_path = os.path.join(res_path, os.path.basename(task_results_dir))
+        fs.copy.copy_dir(osfs, task_results_dir, self.tempfs, res_path)
+        return res_path
 
     @rpc_utils.expose('fs.remove')
     def fs_remove(self, path):
