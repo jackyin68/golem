@@ -2,6 +2,7 @@ import decimal
 import json
 import logging
 import os
+import shutil
 from typing import List, Optional
 
 import mock
@@ -48,12 +49,6 @@ class BasicTaskBuilder(TaskBuilder):
     @classmethod
     def build_definition(cls, task_type: TaskTypeInfo, dictionary,
                          minimal=False):
-        """ Build task defintion from dictionary with described options.
-        :param dict dictionary: described all options need to build a task
-        :param bool minimal: if this option is set too True, then only minimal
-        definition that can be used for task testing can be build. Otherwise
-        all necessary options must be specified in dictionary
-        """
         td = task_type.definition()
         apply(td, dictionary)
         td.task_type = task_type.name
@@ -165,14 +160,11 @@ class GLambdaTask(DockerTask):
                  method,
                  args):
         super().__init__(owner, task_definition, dir_manager)
-
+        self.dir_manager = dir_manager
         self.method = method
         self.args = args
         self.finished = False
-        self.output_path = os.path.join(
-            dir_manager.get_task_output_dir(task_definition.task_id),
-            'result.txt'
-        )
+        self.output_path = dir_manager.get_task_output_dir(task_definition.task_id)
         self.results = None
 
         # State tracking structure helps to determine when
@@ -181,11 +173,6 @@ class GLambdaTask(DockerTask):
         self.progress = 0.0
 
     def initialize(self, dir_manager):
-        """Called after adding a new task, may initialize or create some resources
-        or do other required operations.
-        :param DirManager dir_manager: DirManager instance for accessing temp dir for this task
-        """
-        pass
 
     def create_subtask_id(self) -> str:
         return idgenerator.generate_new_id_from_id(self.header.task_id)
@@ -193,13 +180,6 @@ class GLambdaTask(DockerTask):
     def query_extra_data(self, perf_index: float, num_cores: int = 1,
                          node_id: Optional[str] = None,
                          node_name: Optional[str] = None) -> 'ExtraData':
-        """ Called when a node asks with given parameters asks for a new
-        subtask to compute.
-        :param perf_index: performance that given node declares
-        :param num_cores: number of cores that current node declares
-        :param node_id: id of a node that wants to get a next subtask
-        :param node_name: name of a node that wants to get a next subtask
-        """
         subtask_id = self.create_subtask_id()
 
         subtask_data = {
@@ -221,56 +201,34 @@ class GLambdaTask(DockerTask):
         pass
 
     def short_extra_data_repr(self, extra_data: Task.ExtraData) -> str:
-        """ Should return a short string with general task description that may be used for logging or stats gathering.
-        :param extra_data
-        :return str:
-        """
         return 'glambda task'
 
     def needs_computation(self) -> bool:
-        """ Return information if there are still some subtasks that may be dispended
-        :return bool: True if there are still subtask that should be computed, False otherwise
-        """
         return not self.dispatched_subtasks
 
     def finished_computation(self) -> bool:
-        """ Return information if tasks has been fully computed
-        :return bool: True if there is all tasks has been computed and verified
-        """
         return self.finished and not self.dispatched_subtasks
 
     def computation_finished(self, subtask_id, task_result,
                              result_type=ResultType.DATA,
                              verification_finished=None):
-        """ Inform about finished subtask
-        :param subtask_id: finished subtask id
-        :param task_result: task result, can be binary data or list of files
-        :param result_type: ResultType representation
-        """
         try:
-            # Hardcode for now because we know result.txt is always before other files
-            RESULT_TXT_ID = 0
-            result_file = task_result[RESULT_TXT_ID]
+            outdir_content = os.listdir(
+                os.path.join(
+                    self.dir_manager.get_task_temporary_dir(self.task_definition.task_id),
+                    subtask_id
+                )
+            )
 
-            # FIXME 
-            # We could use copying to speed things up here 
-            # Now we read one file and write it into another 
-            with open(result_file, 'r') as f:
-                with open(self.output_path, 'w') as out:
-                    # Result is of following structure:
-                    # {
-                    #   'data': 'lambda_result_string'
-                    #   'error': 'optional error string'
-                    # }
-                    j_result = json.loads(f.read().encode())
-                    if 'error' in j_result:
-                        out.write(
-                            str(j_result['error'])
-                        )
-                    else:
-                        out.write(
-                            str(j_result['data'])
-                        )
+            for obj in outdir_content:
+                shutil.move(
+                    os.path.join(
+                        self.dir_manager.get_task_temporary_dir(self.task_definition.task_id),
+                        subtask_id,
+                        obj),
+                    self.dir_manager.get_task_output_dir(self.task_definition.task_id,
+                                                                 os.path.basename(obj))
+                )
 
             del self.dispatched_subtasks[subtask_id]
 
@@ -288,98 +246,52 @@ class GLambdaTask(DockerTask):
             logger.exception('')
 
     def computation_failed(self, subtask_id):
-        """ Inform that computation of a task with given id has failed
-        :param subtask_id:
-        """
         self.finished = True
         self.progress = 1.0
         del self.dispatched_subtasks[subtask_id]
 
     def verify_subtask(self, subtask_id):
-        """ Verify given subtask
-        :param subtask_id:
-        :return bool: True if a subtask passed verification, False otherwise
-        """
         return True
 
     def verify_task(self):
-        """ Verify whole task after computation
-        :return bool: True if task passed verification, False otherwise
-        """
         return self.finished_computation()
 
     def get_total_tasks(self) -> int:
-        """ Return total number of tasks that should be computed
-        :return int: number should be greater than 0
-        """
-        # It won't
         return 1
 
     def get_active_tasks(self) -> int:
-        """ Return number of tasks that are currently being computed
-        :return int: number should be between 0 and a result of get_total_tasks
-        """
         return 0 if self.finished else 1 
 
     def get_tasks_left(self) -> int:
-        """ Return number of tasks that still should be computed
-        :return int: number should be between 0 and a result of get_total_tasks
-        """
-        # TODO analogical to get_total_tasks
         return 0 if self.finished else 1
 
     def restart(self):
-        """ Restart all subtask computation for this task """
-        # Restart workflow
         raise NotImplementedError()
 
     def restart_subtask(self, subtask_id):
-        """ Restart subtask with given id """
-        # Restart specific fw_id
         raise NotImplementedError()
 
     def abort(self):
-        """ Abort task and all computations """
-        pass        
+        raise NotImplementedError()
 
     def get_progress(self) -> float:
-        """ Return task computations progress
-        :return float: Return number between 0.0 and 1.0.
-        """
         return 1.0 if self.finished_computation() else 0.0
 
     def get_resources(self) -> list:
-        """ Return list of files that are need to compute this task."""
-        # TODO but what for?
         return self.task_definition.resources
 
     def update_task_state(self, task_state: TaskState):
-        """Update some task information taking into account new state.
-        :param TaskState task_state:
-        """
-        # TODO
         return  # Implement in derived class
 
     def get_trust_mod(self, subtask_id) -> int:
-        """ Return trust modifier for given subtask. This number may be taken into account during increasing
-        or decreasing trust for given node after successful or failed computation.
-        :param subtask_id:
-        :return int:
-        """
         return 1.0
 
     def add_resources(self, resources: set):
-        """ Add resources to a task
-        :param resources:
-        """
         raise NotImplementedError()
 
     def copy_subtask_results(
             self, subtask_id: int, old_subtask_info: dict, results: List[str]) \
             -> None:
-        """
-        Copy results of a single subtask from another task
-        """
         raise NotImplementedError()
 
     def should_accept_client(self, node_id):
@@ -391,47 +303,21 @@ class GLambdaTask(DockerTask):
             return AcceptClientVerdict.SHOULD_WAIT
 
     def get_stdout(self, subtask_id) -> str:
-        """ Return stdout received after computation of subtask_id, if there is no data available
-        return empty string
-        :param subtask_id:
-        :return str:
-        """
-        # That should be something acquired in computation_finished?
         return ""
 
     def get_stderr(self, subtask_id) -> str:
-        """ Return stderr received after computation of subtask_id, if there is no data available
-        return emtpy string
-        :param subtask_id:
-        :return str:
-        """
-        # That should be something acquired in computation_finished?
         return ""
 
     def get_results(self, subtask_id) -> List:
-        """ Return list of files containing results for subtask with given id
-        :param subtask_id:
-        :return list:
-        """
         return self.results
 
     def result_incoming(self, subtask_id):
-        """ Informs that a computed task result is being retrieved
-        :param subtask_id:
-        :return:
-        """
         pass
 
     def get_output_names(self) -> List:
-        """ Return list of files containing final import task results
-        :return list:
-        """
         return [self.output_path]
 
     def get_output_states(self) -> List:
-        """ Return list of states of final task results
-        :return list:
-        """
         return []
 
     def to_dictionary(self):
