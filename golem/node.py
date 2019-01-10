@@ -299,10 +299,19 @@ class Node(object):
         self.tempfs.makedir(res_path)
         osfs = OSFS('/')
 
-        task_results_dir = state.outputs[0]
-        res_path = os.path.join(res_path, os.path.basename(task_results_dir))
-        fs.copy.copy_dir(osfs, task_results_dir, self.tempfs, res_path)
-        return res_path
+        outs = []
+        for output in state.outputs:
+            out_path = os.path.join(
+                res_path,
+                os.path.basename(os.path.normpath(output)))
+            if os.path.isfile(output):
+                fs.copy.copy_file(osfs, output, self.tempfs, out_path)
+            elif os.path.isdir(output):
+                fs.copy.copy_dir(osfs, output, self.tempfs, out_path)
+            else:
+                pass
+            outs.append(out_path)
+        return outs
 
     @rpc_utils.expose('fs.remove')
     def fs_remove(self, path):
