@@ -173,6 +173,7 @@ class GLambdaTask(DockerTask):
         self.progress = 0.0
 
     def initialize(self, dir_manager):
+        pass
 
     def create_subtask_id(self) -> str:
         return idgenerator.generate_new_id_from_id(self.header.task_id)
