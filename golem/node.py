@@ -16,7 +16,7 @@ from typing import (
     TypeVar,
 )
 
-from pathlib import Path
+from pathlib import Path, PurePath
 from twisted.internet import threads
 from twisted.internet.defer import gatherResults, Deferred
 from twisted.python.failure import Failure
@@ -217,13 +217,16 @@ class Node(object):
     @rpc_utils.expose('fs.listdir')
     def fs_listdir(self, path) -> [str]:
         try:
-            return self.tempfs.listdir(path)
+            return [
+                str(PurePath(f)) for f in self.tempfs.listdir(path)
+            ]
         except Exception as e:
             traceback.print_stack()
             return None
 
     @rpc_utils.expose('fs.mkdir')
     def fs_mkdir(self, path) -> [str]:
+        path = str(PurePath(path))
         try:
             self.tempfs.makedir(path)
         except Exception as e:
@@ -236,6 +239,7 @@ class Node(object):
 
     @rpc_utils.expose('fs.upload_id')
     def fs_upload_id(self, path) -> [str]:
+        path = str(PurePath(path))
         return self.upload_ctrl.open(path, 'wb')
 
     @rpc_utils.expose('fs.upload')
@@ -244,6 +248,7 @@ class Node(object):
 
     @rpc_utils.expose('fs.download_id')
     def fs_download_id(self, path) -> [str]:
+        path = str(PurePath(path))
         return self.upload_ctrl.open(path, 'rb')
 
     @rpc_utils.expose('fs.download')
@@ -252,27 +257,33 @@ class Node(object):
 
     @rpc_utils.expose('fs.isdir')
     def fs_isdir(self, path):
+        path = str(PurePath(path))
         return self.tempfs.getinfo(path).is_dir
 
     @rpc_utils.expose('fs.isfile')
     def fs_isfile(self, path):
+        path = str(PurePath(path))
         return self.tempfs.getinfo(path).is_file
 
     @rpc_utils.expose('fs.islink')
     def fs_islink(self, path):
+        path = str(PurePath(path))
         return self.tempfs.getinfo(path).is_link
 
     @rpc_utils.expose('fs.write')
     def fs_write(self, path, data):
+        path = str(PurePath(path))
         with self.tempfs.openbin(path, 'wb') as f:
             return f.write(data)
 
     @rpc_utils.expose('fs.getsyspath')
     def fs_getsyspath(self, path):
+        path = str(PurePath(path))
         return self.tempfs.getsyspath(path)
 
     @rpc_utils.expose('fs.read')
     def fs_read(self, path):
+        path = str(PurePath(path))
         try:
             with self.tempfs.openbin(path, 'rb') as f:
                 return f.read()
@@ -310,11 +321,12 @@ class Node(object):
                 fs.copy.copy_dir(osfs, output, self.tempfs, out_path)
             else:
                 pass
-            outs.append(out_path)
+            outs.append(str(PurePath(out_path)))
         return outs
 
     @rpc_utils.expose('fs.remove')
     def fs_remove(self, path):
+        path = str(PurePath(path))
         return self.tempfs.remove(path)
 
     @rpc_utils.expose('fs.purge')

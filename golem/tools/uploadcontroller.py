@@ -1,3 +1,4 @@
+import sys
 import uuid
 
 class UploadController(object):
@@ -5,7 +6,8 @@ class UploadController(object):
     def __init__(self, fs):
         self.fs = fs
         self.meta = {
-            'chunk_size': 131072*4
+            'chunk_size': 131072*4,
+            'platform': sys.platform
         }
         self.fd_id_map = {}
 
