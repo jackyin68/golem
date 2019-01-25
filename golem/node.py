@@ -147,8 +147,13 @@ class Node(HardwarePresetsMixin):
             update_hw_preset=self.upsert_hw_preset
         )
 
-        self.tempfs = TempFS()
-        self.upload_ctrl = UploadController(self.tempfs)
+        meta = {
+            'chunk_size': 131072*4,
+            'platform': sys.platform
+        }
+        tempfs = TempFS()
+        upload_ctrl = UploadController(tempfs, meta['chunk_size'])
+        self.fs_ctrl = FSController(tempfs, meta, upload_ctrl)
 
         if password is not None:
             if not self.set_password(password):
@@ -229,86 +234,123 @@ class Node(HardwarePresetsMixin):
     def fs_listdir(self, path) -> [str]:
         try:
             return [
-                str(PurePath(f)) for f in self.tempfs.listdir(path)
+                str(PurePath(f)) for f in self.fs_ctrl.fs.listdir(path)
             ]
         except Exception as e:
             traceback.print_stack()
             return None
 
+    class FSController(object):
+        def __init__(self, fs, meta, upload_ctrl):
+            self.fs = fs
+            self._fs_cls = fs.__class__
+            self.meta = meta
+            self.upload_ctrl = upload_ctrl
+
+        def makedir(self, path):
+            self.fs.makedir(path)
+
+        def purge_fs(self):
+            self.fs = self._fs_cls()
+
+        def upload_id(self, path):
+            return self.upload_ctrl.open(path, 'wb')
+
+        def upload(self, _id, data):
+            return self.upload_ctrl.upload(_id, data)
+
+        def download_id(self, path):
+            return self.upload_ctrl.open(path, 'rb')
+
+        def download(self, _id):
+            return self.upload_ctrl.download(_id)
+
+        def remove(self, path):
+            return self.fs_ctrl.remove(path)
+
+        def remove_tree(self, path):
+            self.fs.removetree(path)
+
+        @classmethod
+        def _calc_total_size(fs, path):
+            total_size = 0
+            total_size += fs.getsize(path)
+            if fs.getinfo(path, namespaces=['basic']).is_dir:
+                listed_paths = [os.path.join(path, l) for l in fs.listdir(path)]
+                for l in listed_paths:
+                    if fs.getinfo(l, namespaces=['basic']).is_dir:
+                        total_size += calc_total_size(fs, l)
+                    else:
+                        total_size += fs.getsize(l)
+            return total_size
+
     @rpc_utils.expose('fs.mkdir')
     def fs_mkdir(self, path) -> [str]:
         path = str(PurePath(path))
         try:
-            self.tempfs.makedir(path)
+            self.fs_ctrl.makedir(path)
         except Exception as e:
             traceback.print_stack()
             return None
 
     @rpc_utils.expose('fs.meta')
     def fs_meta(self):
-        return self.upload_ctrl.meta
+        return self.fs_ctrl.meta
 
     @rpc_utils.expose('fs.upload_id')
     def fs_upload_id(self, path) -> [str]:
         path = str(PurePath(path))
-        return self.upload_ctrl.open(path, 'wb')
+        return self.fs_ctrl.upload_id(path)
 
     @rpc_utils.expose('fs.upload')
     def fs_upload(self, _id, data) -> [str]:
-        return self.upload_ctrl.upload(_id, data)
+        return self.fs_ctrl.upload(_id, data)
 
     @rpc_utils.expose('fs.download_id')
     def fs_download_id(self, path) -> [str]:
         path = str(PurePath(path))
-        return self.upload_ctrl.open(path, 'rb')
+        return self.fs_ctrl.download_id(path)
 
     @rpc_utils.expose('fs.download')
     def fs_download(self, _id) -> [str]:
-        return self.upload_ctrl.download(_id)
+        return self.fs_ctrl.download(_id)
 
     @rpc_utils.expose('fs.isdir')
     def fs_isdir(self, path):
         path = str(PurePath(path))
-        return self.tempfs.getinfo(path).is_dir
+        return self.fs_ctrl.fs.getinfo(path).is_dir
 
     @rpc_utils.expose('fs.isfile')
     def fs_isfile(self, path):
         path = str(PurePath(path))
-        return self.tempfs.getinfo(path).is_file
+        return self.fs_ctrl.fs.getinfo(path).is_file
 
     @rpc_utils.expose('fs.islink')
     def fs_islink(self, path):
         path = str(PurePath(path))
-        return self.tempfs.getinfo(path).is_link
-
-    @rpc_utils.expose('fs.write')
-    def fs_write(self, path, data):
-        path = str(PurePath(path))
-        with self.tempfs.openbin(path, 'wb') as f:
-            return f.write(data)
+        return self.fs_ctrl.fs.getinfo(path).is_link
 
     @rpc_utils.expose('fs.getsyspath')
     def fs_getsyspath(self, path):
         path = str(PurePath(path))
-        return self.tempfs.getsyspath(path)
-
-    @rpc_utils.expose('fs.read')
-    def fs_read(self, path):
-        path = str(PurePath(path))
-        try:
-            with self.tempfs.openbin(path, 'rb') as f:
-                return f.read()
-        except Exception as e:
-            traceback.print_stack()
-            return None
+        return self.fs_ctrl.fs.getsyspath(path)
 
     def get_temp_results_path_for_task(self, task_id):
         return 'results-{task_id}'.format(task_id=task_id)
 
+    @rpc_utils.expose('fs.remove')
+    def fs_remove(self, path):
+        path = str(PurePath(path))
+        return self.fs_ctrl.remove(path)
+
+    @rpc_utils.expose('fs.purge')
+    def fs_purge(self):
+        self.fs_ctrl.purge_fs()
+
     @rpc_utils.expose('comp.task.results_purge')
     def purge_task_results(self, task_id):
         path = self.get_temp_results_path_for_task(task_id)
-        self.tempfs.removetree(path)
+        self.fs_ctrl.removetree(path)
 
     @rpc_utils.expose('comp.task.result')
     def get_task_results(self, task_id):
@@ -318,7 +360,7 @@ class Node(HardwarePresetsMixin):
         res_path = self.get_temp_results_path_for_task(task_id)
 
         # Create a directory there results will be held temporarily
-        self.tempfs.makedir(res_path)
+        self.fs_ctrl.makedir(res_path)
         osfs = OSFS('/')
 
         outs = []
@@ -334,15 +376,6 @@ class Node(HardwarePresetsMixin):
                 pass
             outs.append(str(PurePath(out_path)))
         return outs
-
-    @rpc_utils.expose('fs.remove')
-    def fs_remove(self, path):
-        path = str(PurePath(path))
-        return self.tempfs.remove(path)
-
-    @rpc_utils.expose('fs.purge')
-    def fs_purge(self):
-        self.tempfs = TempFS()
 
     @rpc_utils.expose('golem.mainnet')
     @classmethod
