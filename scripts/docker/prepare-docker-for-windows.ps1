@@ -2,7 +2,7 @@
 Param(
     $createShareFolder = "",
     $appDataDir = "",
-    $currentUserName = ""
+    $currentUserName = $env:UserName
 )
 if (Get-Command "AI_GetMsiProperty" -errorAction SilentlyContinue)
 {
