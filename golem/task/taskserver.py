@@ -387,6 +387,12 @@ class TaskServer(
                 task_header.signature,
             )
             return False
+        if task_header.deadline < time.time():
+            logger.info(
+                "Task's deadline already in the past. task_header: %r",
+                task_header
+            )
+            return False
         try:
             if self.task_manager.is_my_task(task_header.task_id) or \
                     task_header.task_owner.key == self.node.key:
@@ -716,10 +722,9 @@ class TaskServer(
             logger.info(f'network mask mismatch: {ids}')
             return False
 
-        if task.should_accept_client(node_id) != AcceptClientVerdict.ACCEPTED:
+        if task.should_accept_client(node_id) == AcceptClientVerdict.REJECTED:
             logger.info(f'provider {node_id} is not allowed'
-                        f' for this task at this moment '
-                        f'(either waiting for results or previously failed)')
+                        f' for this task (it has previously failed)')
             return False
 
         logger.debug('provider can be accepted %s', ids)
